@@ -489,6 +489,28 @@ func bootstrapGitComponents(env environment) string {
 	`, env.kubeCfgPath, env.httpClone, env.username, env.password)
 }
 
+func bootstrapGitExistingSecret(env environment) string {
+	return fmt.Sprintf(`
+    provider "flux" {
+	  kubernetes = {
+        config_path = "%s"
+	  }
+	  git = {
+        url = "%s"
+        http = {
+          username = "%s"
+          password = "%s"
+          allow_insecure_http = true
+        }
+	  }
+    }
+
+    resource "flux_bootstrap_git" "this" {
+      secret_overwrite = false
+    }
+	`, env.kubeCfgPath, env.httpClone, env.username, env.password)
+}
+
 type environment struct {
 	kubeCfgPath string
 	httpClone   string

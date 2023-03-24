@@ -41,6 +41,7 @@ resource "flux_bootstrap_git" "this" {
 - `recurse_submodules` (Boolean) Configures the GitRepository source to initialize and include Git submodules in the artifact it produces.
 - `registry` (String) Container registry where the toolkit images are published. Defaults to `ghcr.io/fluxcd`.
 - `secret_name` (String) Name of the secret the sync credentials can be found in or stored to. Defaults to `flux-system`.
+- `secret_overwrite` (Boolean) Whether the existing secret is overwritten in case it exists. Defaults to `true`.
 - `toleration_keys` (Set of String) List of toleration keys used to schedule the components pods onto nodes with matching taints.
 - `version` (String) Flux version. Defaults to `v0.41.2`.
 - `watch_all_namespaces` (Boolean) If true watch for custom resources in all namespaces. Defaults to `true`.
