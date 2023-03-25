@@ -18,6 +18,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"math/rand"
@@ -35,6 +36,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/fluxcd/flux2/pkg/manifestgen"
+	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
 	"github.com/fluxcd/pkg/git"
 	"github.com/fluxcd/pkg/git/gogit"
 	"github.com/fluxcd/pkg/git/repository"
@@ -43,6 +45,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -323,6 +326,81 @@ patches:
 	})
 }
 
+func TestAccBootstrapGit_ExistingSecret(t *testing.T) {
+	env := setupEnvironment(t)
+	namespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "flux-system",
+		},
+	}
+
+	existingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "flux-system",
+			Namespace: namespace.Name,
+		},
+		StringData: map[string]string{
+			"identity":     base64.StdEncoding.EncodeToString([]byte(env.privateKey)),
+			"identity.pub": base64.StdEncoding.EncodeToString([]byte(env.publicKey)),
+			"known_hosts":  base64.StdEncoding.EncodeToString([]byte(env.sshHostKey)),
+		},
+		Type: corev1.SecretTypeOpaque,
+	}
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				PreConfig: func() {
+					cfg, err := clientcmd.BuildConfigFromFlags("", env.kubeCfgPath)
+					if err != nil {
+						t.Fatalf("Can not initialize kubeconfig: %s", err)
+					}
+					client, err := kubernetes.NewForConfig(cfg)
+					if err != nil {
+						t.Fatalf("Can not initialize kubeconfig: %s", err)
+					}
+					_, err = client.CoreV1().Namespaces().Create(context.TODO(), namespace, metav1.CreateOptions{})
+					if err != nil {
+						t.Fatalf("Can not create namespace: %s", err)
+					}
+					_, err = client.CoreV1().Secrets(namespace.Name).Create(context.TODO(), existingSecret, metav1.CreateOptions{})
+					if err != nil {
+						t.Fatalf("Can not create secret: %s", err)
+					}
+
+				},
+				Config: bootstrapGitExistingSecret(env),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet("flux_bootstrap_git.this", "repository_files.flux-system/kustomization.yaml"),
+					resource.TestCheckResourceAttrSet("flux_bootstrap_git.this", "repository_files.flux-system/gotk-components.yaml"),
+					resource.TestCheckResourceAttrSet("flux_bootstrap_git.this", "repository_files.flux-system/gotk-sync.yaml"),
+					func(state *terraform.State) error {
+						cfg, err := clientcmd.BuildConfigFromFlags("", env.kubeCfgPath)
+						if err != nil {
+							return nil
+						}
+						client, err := kubernetes.NewForConfig(cfg)
+						if err != nil {
+							return nil
+						}
+						secret, err := client.CoreV1().Secrets(namespace.Name).Get(context.TODO(), existingSecret.Name, metav1.GetOptions{})
+						if err != nil {
+							return nil
+						}
+						for key := range secret.Data {
+							if !(key == "identity" || key == "identity.pub" || key == "known_hosts") {
+								return fmt.Errorf("existing secret had unexpected key: %s", key)
+							}
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
 func bootstrapGitTolerationKeys(env environment, tolerationKeys []string) string {
 	return fmt.Sprintf(`
     provider "flux" {
@@ -518,6 +596,8 @@ type environment struct {
 	username    string
 	password    string
 	privateKey  string
+	publicKey   string
+	sshHostKey  string
 }
 
 func setupEnvironment(t *testing.T) environment {
@@ -631,6 +711,7 @@ func setupEnvironment(t *testing.T) environment {
 	}
 	giteaClient.AdminCreateUserPublicKey(username, createPublicKeyOpt)
 
+	sshHostKey, err := sourcesecret.ScanHostKey(fmt.Sprintf("%s:%d", giteaName, sshPort))
 	return environment{
 		kubeCfgPath: kubeCfgPath,
 		httpClone:   repo.CloneURL,
@@ -638,6 +719,8 @@ func setupEnvironment(t *testing.T) environment {
 		username:    username,
 		password:    password,
 		privateKey:  string(keyPair.PrivateKey),
+		publicKey:   string(keyPair.PublicKey),
+		sshHostKey:  string(sshHostKey),
 	}
 }
 
